@@ -80,6 +80,36 @@ LOCALIZATION_SCRIPT = r"""
     'Unexpected response — check manually': 'Nieoczekiwana odpowiedź — sprawdź ręcznie', 'Last checked': 'Ostatnie sprawdzenie',
     'No checks yet': 'Brak sprawdzeń', 'Session expires in': 'Sesja wygaśnie za', 'min': 'min',
     'No available slots found': 'Brak dostępnych terminów', 'Next check in': 'Następne sprawdzenie za',
+    "Also send alerts to Telegram": "Wysyłaj powiadomienia także na Telegram",
+    "Sends the same alerts as the phone push to a Telegram chat through your own bot. Optional — ntfy keeps working either way.": "Wysyła te same powiadomienia co push na telefon do czatu Telegram przez Twojego własnego bota. Opcjonalne — ntfy działa niezależnie.",
+    "Bot token — create a bot with": "Token bota — utwórz bota w",
+    "(/newbot) and paste the token it gives you:": "(/newbot) i wklej otrzymany token:",
+    "Show or hide bot token": "Pokaż lub ukryj token bota",
+    "Chat ID — open your bot in Telegram, press Start, then click \"Find my chat ID\":": "ID czatu — otwórz bota w Telegramie, naciśnij Start, a potem kliknij „Znajdź moje ID czatu”:",
+    "Find my chat ID": "Znajdź moje ID czatu",
+    "The token controls your bot — don't share it. It is stored only in your local config.json.": "Token daje kontrolę nad botem — nie udostępniaj go. Jest zapisany tylko w lokalnym pliku config.json.",
+    "Send test message": "Wyślij wiadomość testową",
+    "Sent — check Telegram.": "Wysłano — sprawdź Telegram.",
+    "Looking for chats...": "Szukanie czatów...",
+    "Lookup failed.": "Wyszukiwanie nie powiodło się.",
+    "Chat ID filled in. Now send a test message.": "ID czatu uzupełnione. Teraz wyślij wiadomość testową.",
+    "Several chats found — pick yours:": "Znaleziono kilka czatów — wybierz swój:",
+    "Telegram bot token looks wrong. Copy it from @BotFather (it looks like 123456789:AAE...).": "Token bota Telegram wygląda na niepoprawny. Skopiuj go z @BotFather (wygląda jak 123456789:AAE...).",
+    "Telegram chat ID must be a number (e.g. 123456789 or -100123...) or a public channel name like @my_channel.": "ID czatu Telegram musi być liczbą (np. 123456789 lub -100123...) albo nazwą publicznego kanału, np. @my_channel.",
+    "Telegram bot token is required": "Token bota Telegram jest wymagany",
+    "Telegram chat ID is required": "ID czatu Telegram jest wymagane",
+    "Telegram settings must be text": "Ustawienia Telegram muszą być tekstem",
+    "Enter the Telegram bot token first.": "Najpierw wpisz token bota Telegram.",
+    "Enter the Telegram chat ID first.": "Najpierw wpisz ID czatu Telegram.",
+    "No messages found. Open your bot in Telegram, press Start (or send any message), then try again.": "Nie znaleziono wiadomości. Otwórz bota w Telegramie, naciśnij Start (lub wyślij dowolną wiadomość) i spróbuj ponownie.",
+    "Telegram rejected the bot token. Check it in @BotFather.": "Telegram odrzucił token bota. Sprawdź go w @BotFather.",
+    "Telegram chat not found. Open your bot, press Start (/start), then check the chat ID.": "Nie znaleziono czatu Telegram. Otwórz bota, naciśnij Start (/start) i sprawdź ID czatu.",
+    "The bot can't message this chat. Open the bot, press Start (/start) and don't block it.": "Bot nie może pisać na ten czat. Otwórz bota, naciśnij Start (/start) i go nie blokuj.",
+    "Telegram is rate limiting this bot. Try again in a minute.": "Telegram ogranicza tego bota. Spróbuj ponownie za minutę.",
+    "This bot has a webhook set, so the chat ID can't be looked up here. Enter it manually.": "Ten bot ma ustawiony webhook, więc nie można tu znaleźć ID czatu. Wpisz je ręcznie.",
+    "Telegram rejected the request. Check the chat ID.": "Telegram odrzucił żądanie. Sprawdź ID czatu.",
+    "Could not reach Telegram. Check your network connection.": "Nie można połączyć się z Telegramem. Sprawdź połączenie sieciowe.",
+    "Telegram is not configured.": "Telegram nie jest skonfigurowany.",
     'Sending...': 'Wysyłanie...', 'Sent — check your phone.': 'Wysłano — sprawdź telefon.', 'Failed to send.': 'Nie udało się wysłać.',
     'Could not reach ntfy. Check your network connection.': 'Nie można połączyć się z ntfy. Sprawdź połączenie z internetem.',
     'TLS certificate verification failed. Check your system trust settings.': 'Weryfikacja certyfikatu TLS nie powiodła się. Sprawdź ustawienia zaufanych certyfikatów systemu.',
@@ -166,6 +196,8 @@ LOCALIZATION_SCRIPT = r"""
     if (match) return `Ośrodki WORD do obserwowania (${match[1]} w kraju)`;
     match = text.match(/^Watching (\d+) of (\d+) centers for open slots\.$/);
     if (match) return `Obserwujesz ${match[1]} z ${match[2]} ośrodków pod kątem wolnych terminów.`;
+    match = text.match(/^Telegram returned HTTP (\d+)\.$/);
+    if (match) return `Telegram zwrócił HTTP ${match[1]}.`;
     match = text.match(/^Every (.+)$/);
     if (match) return `Co ${match[1]}`;
     match = text.match(/^Rate limit reached — search resumes at (.+)$/);

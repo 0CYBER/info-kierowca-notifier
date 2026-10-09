@@ -4,6 +4,15 @@ All notable changes to **Info Kierowca Notifier** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- Optional **Telegram** notifications alongside ntfy (**Settings → Alerts → Also send alerts to Telegram**): bot token, chat ID, **Find my chat ID** (via the bot's recent messages) and **Send test message**.
+- Slot alerts, login-recovery alerts and reschedule alerts are mirrored to Telegram when enabled, using the same alert toggles; slot alerts include a link to info-kierowca.pl.
+- New `config.json` keys `telegram_enabled`, `telegram_bot_token`, `telegram_chat_id`; token and chat ID are format-validated and never echoed in errors or logs.
+- Polish translations for the new UI and error messages.
+
+
 ## [2.4.4] - 2026-10-09
 
 ### Changed

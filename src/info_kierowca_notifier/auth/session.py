@@ -42,6 +42,7 @@ from info_kierowca_notifier.auth import providers as auth_providers
 from info_kierowca_notifier.auth import credentials as credential_store
 from info_kierowca_notifier.auth import sms as sms_provider
 from info_kierowca_notifier import ntfy_transport
+from info_kierowca_notifier import telegram_transport
 from info_kierowca_notifier.auth import relogin_control
 
 from info_kierowca_notifier.paths import AUTO_REFRESH_LOCK as LOCK_FILE  # noqa: E402
@@ -467,8 +468,17 @@ def push_ntfy(title, message, priority="default", tags=None):
         return ntfy_transport.NotificationOutcome(
             ntfy_transport.NOT_CONFIGURED, "No notification topic is configured."
         )
+    if not config.get("phone_alerts_relogin", True):
+        return ntfy_transport.NotificationOutcome(
+            ntfy_transport.NOT_CONFIGURED, "Phone alerts are disabled or not configured."
+        )
+    # Telegram is an optional mirror of the same alert. It is sent
+    # independently, but the returned outcome stays ntfy's, as before.
+    telegram_outcome = telegram_transport.push_from_config(config, title, message, priority=priority)
+    if telegram_outcome.kind != ntfy_transport.NOT_CONFIGURED and not telegram_outcome.ok:
+        print("Couldn't send Telegram message (reason={}).".format(telegram_outcome.kind))
     topic = config.get("ntfy_topic")
-    if not topic or not config.get("phone_alerts_relogin", True):
+    if not topic:
         return ntfy_transport.NotificationOutcome(
             ntfy_transport.NOT_CONFIGURED, "Phone alerts are disabled or not configured."
         )

@@ -33,6 +33,7 @@ from info_kierowca_notifier import client
 from info_kierowca_notifier.auth import launch as auth_launch
 from info_kierowca_notifier.booking import launch as booking_launch
 from info_kierowca_notifier.booking import reschedule as open_logged_in_browser
+from info_kierowca_notifier import telegram_transport
 from info_kierowca_notifier import tls_transport
 from info_kierowca_notifier.paths import CATEGORIES_FILE, WORD_CENTERS_FILE
 from info_kierowca_notifier.web.templates import LOGIN_PAGE, TOOLBAR_HTML, WIZARD_PAGE
@@ -347,6 +348,25 @@ def build_config(payload):
     pz_username = (payload.get("pz_username") or "").strip()
     if login_method == "profil_zaufany" and not pz_username:
         raise ValueError("Profil Zaufany username is required")
+    # Optional Telegram mirror of the ntfy alerts. Token and chat ID are kept
+    # even while disabled, so toggling it off and on doesn't lose them, but
+    # they must be well-formed: the token goes into the Bot API URL path.
+    telegram_enabled = bool(payload.get("telegram_enabled", False))
+    telegram_bot_token = payload.get("telegram_bot_token") or ""
+    telegram_chat_id = payload.get("telegram_chat_id") or ""
+    if not isinstance(telegram_bot_token, str) or not isinstance(telegram_chat_id, (str, int)):
+        raise ValueError("Telegram settings must be text")
+    telegram_bot_token = telegram_bot_token.strip()
+    telegram_chat_id = str(telegram_chat_id).strip()
+    if telegram_enabled and not telegram_bot_token:
+        raise ValueError("Telegram bot token is required")
+    if telegram_enabled and not telegram_chat_id:
+        raise ValueError("Telegram chat ID is required")
+    if telegram_bot_token and not telegram_transport.valid_token(telegram_bot_token):
+        raise ValueError(telegram_transport.BOT_TOKEN_ERROR)
+    if telegram_chat_id and not telegram_transport.valid_chat_id(telegram_chat_id):
+        raise ValueError(telegram_transport.CHAT_ID_ERROR)
+
     config = {
         "login_method": login_method,
         "pz_username": pz_username,
@@ -367,6 +387,9 @@ def build_config(payload):
         "latest_slot_hour": latest_slot_hour,
         "phone_alerts": bool(payload.get("phone_alerts", True)),
         "phone_alerts_relogin": bool(payload.get("phone_alerts_relogin", True)),
+        "telegram_enabled": telegram_enabled,
+        "telegram_bot_token": telegram_bot_token,
+        "telegram_chat_id": telegram_chat_id,
         # Recovery is part of the selected authentication flow rather than a
         # wizard preference: mObywatel reopens the QR screen, while Profil
         # Zaufany performs its automatic credential + SMS login.
@@ -629,6 +652,10 @@ class AppHandler(guard.LocalRequestGuardMixin, http.server.BaseHTTPRequestHandle
             self._set_paused(False)
         elif self.path == "/test-push":
             self._handle_test_push()
+        elif self.path == "/test-telegram":
+            self._handle_test_telegram()
+        elif self.path == "/telegram-chat-id":
+            self._handle_telegram_chat_id()
         elif self.path == "/reset-account":
             self._handle_reset_account()
         elif self.path == "/pair-google-messages":
@@ -824,6 +851,11 @@ class AppHandler(guard.LocalRequestGuardMixin, http.server.BaseHTTPRequestHandle
             previous = self._load_config_or_empty()
             payload.setdefault("login_method", previous.get("login_method", "mobywatel"))
             payload.setdefault("pz_username", previous.get("pz_username", ""))
+            # A payload from an older page (no Telegram controls) keeps the
+            # saved Telegram settings instead of silently wiping them.
+            for key in ("telegram_enabled", "telegram_bot_token", "telegram_chat_id"):
+                if key not in payload and key in previous:
+                    payload[key] = previous[key]
             config = build_config(payload)
         except ValueError as e:
             self._send_json(400, {"ok": False, "error": str(e)})
@@ -884,6 +916,76 @@ class AppHandler(guard.LocalRequestGuardMixin, http.server.BaseHTTPRequestHandle
             self._send_json(200, {"ok": True})
         else:
             self._send_json(502, {"ok": False, "error": outcome.detail, "reason": outcome.kind})
+
+    def _telegram_token_from(self, payload):
+        """Token from the request body; falls back to the saved one so the
+        buttons work after a save without re-pasting the (hidden) token.
+        Sends a 400 and returns None when no valid token is available."""
+        token = payload.get("token")
+        if not isinstance(token, str) or not token.strip():
+            token = self._load_config_or_empty().get("telegram_bot_token") or ""
+        token = token.strip()
+        if not token:
+            self._send_json(400, {"ok": False, "error": "Enter the Telegram bot token first."})
+            return None
+        if not telegram_transport.valid_token(token):
+            self._send_json(400, {"ok": False, "error": telegram_transport.BOT_TOKEN_ERROR})
+            return None
+        return token
+
+    def _handle_test_telegram(self):
+        """Backs the "Send test message" button in the Telegram block. Like
+        /test-push it uses the values currently in the form, so it works
+        before Settings have been saved."""
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        token = self._telegram_token_from(payload)
+        if token is None:
+            return
+        chat_id = str(payload.get("chat_id") or "").strip()
+        if not chat_id:
+            self._send_json(400, {"ok": False, "error": "Enter the Telegram chat ID first."})
+            return
+        if not telegram_transport.valid_chat_id(chat_id):
+            self._send_json(400, {"ok": False, "error": telegram_transport.CHAT_ID_ERROR})
+            return
+        outcome = telegram_transport.push_telegram(
+            token, chat_id,
+            "info-kierowca: test notification",
+            "This is what a real alert will look like.",
+            priority="default",
+            timeout=notifier.NTFY_TIMEOUT,
+        )
+        if AppHandler.logger is not None:
+            AppHandler.logger.info(
+                "outcome=telegram_test reason=%s status=%s", outcome.kind, outcome.http_status
+            )
+        if outcome.ok:
+            self._send_json(200, {"ok": True})
+        else:
+            self._send_json(502, {"ok": False, "error": outcome.detail, "reason": outcome.kind})
+
+    def _handle_telegram_chat_id(self):
+        """Backs "Find my chat ID": lists chats that recently messaged the
+        bot, so the user doesn't need a third-party bot to learn their ID."""
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        token = self._telegram_token_from(payload)
+        if token is None:
+            return
+        outcome, chats = telegram_transport.find_chat_ids(token, timeout=notifier.NTFY_TIMEOUT)
+        if not outcome.ok:
+            self._send_json(502, {"ok": False, "error": outcome.detail, "reason": outcome.kind})
+            return
+        if not chats:
+            self._send_json(404, {
+                "ok": False,
+                "error": "No messages found. Open your bot in Telegram, press Start (or send any message), then try again.",
+            })
+            return
+        self._send_json(200, {"ok": True, "chats": chats[:10]})
 
     def _handle_reset_account(self):
         """Backs the settings page's "Reset account" button: clears

@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta
 from info_kierowca_notifier import client
 from info_kierowca_notifier.auth import launch as auth_launch
 from info_kierowca_notifier import ntfy_transport
+from info_kierowca_notifier import telegram_transport
 from info_kierowca_notifier.booking import launch as booking_launch
 from info_kierowca_notifier import tls_transport
 from info_kierowca_notifier.paths import (  # noqa: F401  (re-exported: other modules read these off notifier)
@@ -38,6 +39,8 @@ from info_kierowca_notifier.paths import (  # noqa: F401  (re-exported: other mo
 
 MAX_HISTORY = 200
 NTFY_TIMEOUT = 15
+# Appended to Telegram slot alerts so the message is one tap from the site.
+TELEGRAM_BOOKING_URL = "https://info-kierowca.pl/cases"
 
 # The search endpoint rejects anything but exactly 5 organizationIds
 # ("Exactly 5 exam centers must be provided when searching for the fastest
@@ -452,6 +455,26 @@ def push_ntfy(logger, topic, title, message, priority="default", tags=None):
         logger.info("outcome=push_sent status=%s", outcome.http_status)
     else:
         logger.info("outcome=push_failed reason=%s status=%s", outcome.kind, outcome.http_status)
+    return outcome
+
+
+def push_telegram(logger, config, title, message, priority="default"):
+    """Mirror a push to Telegram when config.json enables it.
+
+    Best effort and independent of ntfy: a Telegram failure is logged (never
+    with the bot token) and returned, but never raised to the poll loop.
+    """
+    outcome = telegram_transport.push_from_config(
+        config, title, message, priority=priority, timeout=NTFY_TIMEOUT
+    )
+    if outcome.kind == ntfy_transport.NOT_CONFIGURED:
+        return outcome
+    if outcome.ok:
+        logger.info("outcome=telegram_sent status=%s", outcome.http_status)
+    else:
+        logger.info(
+            "outcome=telegram_failed reason=%s status=%s", outcome.kind, outcome.http_status
+        )
     return outcome
 
 
@@ -965,6 +988,13 @@ def run_check(logger, dash_status):
                         config.get("ntfy_topic"),
                         "Slot within range!",
                         push_body,
+                        priority="urgent",
+                    )
+                    push_telegram(
+                        logger,
+                        config,
+                        "Slot within range!",
+                        push_body + "\n\n" + TELEGRAM_BOOKING_URL,
                         priority="urgent",
                     )
                     logger.info("outcome=push_sent detail=%r", fastest)

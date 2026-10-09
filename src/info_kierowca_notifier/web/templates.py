@@ -497,6 +497,12 @@ WIZARD_PAGE = """<!doctype html>
   #test-push-btn { width: auto; padding: 0.5rem 0.9rem; background: #2f2f2f; color: #eee;
     border: 1px solid #3d3d3d; border-radius: 7px; cursor: pointer; font-size: 0.85rem; font-weight: 400; }
   #test-push-btn:hover { border-color: #555; }
+  #telegram-find-chat-btn, #test-telegram-btn { width: auto; padding: 0.5rem 0.9rem; background: #2f2f2f; color: #eee;
+    border: 1px solid #3d3d3d; border-radius: 7px; cursor: pointer; font-size: 0.85rem; font-weight: 400; white-space: nowrap; }
+  #telegram-find-chat-btn:hover, #test-telegram-btn:hover { border-color: #555; }
+  .telegram-chat-choice { display: inline-block; margin: 0.35rem 0.4rem 0 0; padding: 0.3rem 0.6rem; background: #2f2f2f;
+    color: #eee; border: 1px solid #3d3d3d; border-radius: 999px; cursor: pointer; font-size: 0.82rem; }
+  .telegram-chat-choice:hover { border-color: var(--accent-soft); }
   #reset-account-btn { width: auto; padding: 0.55rem 1rem; background: transparent; color: #d98c8c;
     border: 1px solid rgba(217,140,140,0.4); border-radius: 7px; cursor: pointer; font-size: 0.88rem; font-weight: 500; }
   #reset-account-btn:hover { background: rgba(217,140,140,0.1); border-color: rgba(217,140,140,0.7); }
@@ -607,6 +613,8 @@ WIZARD_PAGE = """<!doctype html>
   }
   #ntfy-field { transition: opacity 0.15s; }
   #ntfy-field.disabled { opacity: 0.4; pointer-events: none; }
+  #telegram-field { transition: opacity 0.15s; }
+  #telegram-field.disabled { opacity: 0.4; pointer-events: none; }
   #auto-confirm-row { transition: opacity 0.15s; }
   #auto-confirm-row.disabled { opacity: 0.4; pointer-events: none; }
 
@@ -869,6 +877,32 @@ WIZARD_PAGE = """<!doctype html>
         <div class="hint" style="margin-top:0.8rem;">Anyone who knows this link can read your notifications — don't share it.</div>
         <button type="button" id="test-push-btn" style="margin-top:0.8rem;">Send test push</button>
         <div class="hint" id="test-push-status" style="margin-top:0.5rem;"></div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="toggle-row">
+        <div class="toggle-text">
+          <div class="tt-title">Also send alerts to Telegram</div>
+          <div class="tt-sub">Sends the same alerts as the phone push to a Telegram chat through your own bot. Optional — ntfy keeps working either way.</div>
+        </div>
+        <div class="switch" id="telegram-enabled" role="switch" aria-checked="false" tabindex="0"></div>
+      </div>
+      <div id="telegram-field" class="disabled" style="margin-top:1rem;">
+        <label for="telegram_bot_token">Bot token — create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener" style="color:var(--accent-soft);">@BotFather</a> (/newbot) and paste the token it gives you:</label>
+        <div class="reveal">
+          <input type="password" id="telegram_bot_token" autocomplete="off" spellcheck="false" placeholder="123456789:AAE...">
+          <button type="button" class="reveal-btn" id="reveal-telegram-token" aria-label="Show or hide bot token"></button>
+        </div>
+        <label for="telegram_chat_id">Chat ID — open your bot in Telegram, press Start, then click "Find my chat ID":</label>
+        <div class="ntfy-row">
+          <input type="text" id="telegram_chat_id" autocomplete="off" spellcheck="false" placeholder="123456789" style="flex:1; margin-bottom:0;">
+          <button type="button" id="telegram-find-chat-btn">Find my chat ID</button>
+        </div>
+        <div id="telegram-chat-choices"></div>
+        <div class="hint" style="margin-top:0.8rem;">The token controls your bot — don't share it. It is stored only in your local config.json.</div>
+        <button type="button" id="test-telegram-btn" style="margin-top:0.8rem;">Send test message</button>
+        <div class="hint" id="test-telegram-status" style="margin-top:0.5rem;"></div>
       </div>
     </fieldset>
 
@@ -1284,6 +1318,12 @@ function applyNtfyDim() {
 }
 wireSwitch(phoneAlertsSwitch, applyNtfyDim);
 wireSwitch(phoneAlertsReloginSwitch, applyNtfyDim);
+const telegramSwitch = document.getElementById('telegram-enabled');
+const telegramField = document.getElementById('telegram-field');
+function applyTelegramDim() {
+  telegramField.classList.toggle('disabled', !telegramSwitch.classList.contains('on'));
+}
+wireSwitch(telegramSwitch, applyTelegramDim);
 wireSwitch(document.getElementById('headless_pz_login'));
 wireSwitch(document.getElementById('auto_open_browser'));
 
@@ -1487,6 +1527,9 @@ wireReveal(document.getElementById('settings-pz-username'), document.getElementB
 const ntfyInput = document.getElementById('ntfy_topic');
 ntfyInput.value = NTFY_TOPIC;
 wireReveal(ntfyInput, document.getElementById('reveal-ntfy'));
+const telegramTokenInput = document.getElementById('telegram_bot_token');
+const telegramChatInput = document.getElementById('telegram_chat_id');
+wireReveal(telegramTokenInput, document.getElementById('reveal-telegram-token'));
 
 // ---- PKK profile picker (prefilled after QR login / on Settings, see
 // build_pkk_prefill). Three presentations depending on account profile count:
@@ -1819,6 +1862,10 @@ if (EXISTING_CONFIG) {
   setSwitch(autoConfirmSwitch, EXISTING_CONFIG.auto_confirm_reschedule === true);
   applyAutoConfirmDim();
   applyNtfyDim();
+  setSwitch(telegramSwitch, EXISTING_CONFIG.telegram_enabled === true);
+  telegramTokenInput.value = EXISTING_CONFIG.telegram_bot_token || '';
+  telegramChatInput.value = EXISTING_CONFIG.telegram_chat_id || '';
+  applyTelegramDim();
 
   // Nothing to reset on a fresh /setup with no saved config yet.
   document.getElementById('reset-account-block').style.display = 'block';
@@ -1857,6 +1904,65 @@ testPushBtn.addEventListener('click', async () => {
     testPushStatus.textContent = t('Failed to send.');
   } finally {
     testPushBtn.disabled = false;
+  }
+});
+
+const testTelegramBtn = document.getElementById('test-telegram-btn');
+const testTelegramStatus = document.getElementById('test-telegram-status');
+const telegramFindChatBtn = document.getElementById('telegram-find-chat-btn');
+const telegramChatChoices = document.getElementById('telegram-chat-choices');
+async function postTelegram(path, body) {
+  const res = await fetch(path, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  return res.json();
+}
+testTelegramBtn.addEventListener('click', async () => {
+  testTelegramBtn.disabled = true;
+  testTelegramStatus.textContent = t('Sending...');
+  try {
+    const data = await postTelegram('/test-telegram', {
+      token: telegramTokenInput.value.trim(), chat_id: telegramChatInput.value.trim(),
+    });
+    testTelegramStatus.textContent = data.ok ? t('Sent — check Telegram.') : t(data.error || 'Failed to send.');
+  } catch (e) {
+    testTelegramStatus.textContent = t('Failed to send.');
+  } finally {
+    testTelegramBtn.disabled = false;
+  }
+});
+telegramFindChatBtn.addEventListener('click', async () => {
+  telegramFindChatBtn.disabled = true;
+  telegramChatChoices.textContent = '';
+  testTelegramStatus.textContent = t('Looking for chats...');
+  try {
+    const data = await postTelegram('/telegram-chat-id', {token: telegramTokenInput.value.trim()});
+    if (!data.ok) {
+      testTelegramStatus.textContent = t(data.error || 'Lookup failed.');
+      return;
+    }
+    if (data.chats.length === 1) {
+      telegramChatInput.value = data.chats[0].id;
+      testTelegramStatus.textContent = t('Chat ID filled in. Now send a test message.');
+      return;
+    }
+    testTelegramStatus.textContent = t('Several chats found — pick yours:');
+    data.chats.forEach((chat) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'telegram-chat-choice';
+      btn.textContent = (chat.name ? chat.name + ' · ' : '') + chat.id;
+      btn.addEventListener('click', () => {
+        telegramChatInput.value = chat.id;
+        telegramChatChoices.textContent = '';
+        testTelegramStatus.textContent = t('Chat ID filled in. Now send a test message.');
+      });
+      telegramChatChoices.appendChild(btn);
+    });
+  } catch (e) {
+    testTelegramStatus.textContent = t('Lookup failed.');
+  } finally {
+    telegramFindChatBtn.disabled = false;
   }
 });
 
@@ -1945,6 +2051,9 @@ document.getElementById('form').addEventListener('submit', async (e) => {
       auto_select_slot: switchOn('auto_select_slot'),
       auto_confirm_reschedule: switchOn('auto_confirm_reschedule'),
       ntfy_topic: ntfyInput.value,
+      telegram_enabled: switchOn('telegram-enabled'),
+      telegram_bot_token: telegramTokenInput.value.trim(),
+      telegram_chat_id: telegramChatInput.value.trim(),
     };
 
     const res = await fetch('/setup', {

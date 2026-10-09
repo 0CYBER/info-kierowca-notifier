@@ -39,6 +39,7 @@ from info_kierowca_notifier.browser.chrome import (
     find_chrome,
 )
 from info_kierowca_notifier import ntfy_transport
+from info_kierowca_notifier import telegram_transport
 from info_kierowca_notifier.booking import transaction as rt
 
 from info_kierowca_notifier.paths import CONFIG_FILE, RESCHEDULE_CONFIRM_COOLDOWN_FILE, STATE_DIR  # noqa: E402
@@ -547,6 +548,12 @@ def push_ntfy(topic, title, message, priority="default"):
     outcome = ntfy_transport.push_ntfy(topic, title, message, priority=priority)
     if not outcome.ok:
         print("Couldn't send push notification (reason={}).".format(outcome.kind))
+    # Optional Telegram mirror, read fresh from config.json like the topic.
+    telegram_outcome = telegram_transport.push_from_config(
+        read_config(), title, message, priority=priority
+    )
+    if telegram_outcome.kind != ntfy_transport.NOT_CONFIGURED and not telegram_outcome.ok:
+        print("Couldn't send Telegram message (reason={}).".format(telegram_outcome.kind))
     return outcome
 
 

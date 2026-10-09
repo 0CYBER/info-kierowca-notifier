@@ -24,7 +24,8 @@ JSON_CT = "application/json"
 POST_PATHS = [
     "/setup", "/login-start", "/shutdown", "/manual-login", "/relogin-now",
     "/relogin-restart", "/pause", "/resume", "/test-push", "/reset-account",
-    "/pair-google-messages", "/test-google-messages",
+    "/pair-google-messages", "/test-google-messages", "/test-telegram",
+    "/telegram-chat-id",
 ]
 
 

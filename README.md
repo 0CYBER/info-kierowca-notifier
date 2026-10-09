@@ -106,6 +106,11 @@ it at your own risk and in line with the site's terms of service.
 During setup you'll get a private link — install the [ntfy app](https://ntfy.sh/app) and
 subscribe to it exactly to get a push the moment a slot appears in your chosen window.
 
+Optionally, the same alerts can also go to **Telegram**: in **Settings → Alerts**, turn on
+**Also send alerts to Telegram**, create a bot with [@BotFather](https://t.me/BotFather)
+(`/newbot`), paste its token, open your bot and press **Start**, then click
+**Find my chat ID** and **Send test message**. ntfy keeps working either way.
+
 ## Running from source / advanced setup
 
 Want to run this from source, use it on Linux with systemd, or see exactly how the auto-login
