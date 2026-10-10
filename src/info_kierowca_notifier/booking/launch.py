@@ -181,7 +181,7 @@ def trigger_open_browser(logger, config, auto_click=True, target_hit=None):
                 cmd.append("--confirm-reschedule")
     try:
         RESCHEDULE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(RESCHEDULE_LOG_FILE, "a") as logf:
+        with open(RESCHEDULE_LOG_FILE, "a", encoding="utf-8") as logf:
             _restrict_log_permissions(RESCHEDULE_LOG_FILE)
             logf.write(f"\n--- {datetime.now().isoformat()} launching: {cmd!r} ---\n")
             logf.flush()

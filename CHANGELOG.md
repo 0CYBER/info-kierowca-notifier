@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Use UTF-8 for booking-helper output and its launch log so Polish messages do not crash on Windows systems using a legacy Cyrillic code page.
+
 ### Added
 - Optional **Telegram** notifications alongside ntfy (**Settings → Alerts → Also send alerts to Telegram**): bot token, chat ID, **Find my chat ID** (via the bot's recent messages) and **Send test message**.
 - Slot alerts, login-recovery alerts and reschedule alerts are mirrored to Telegram when enabled, using the same alert toggles; slot alerts include a link to info-kierowca.pl.

@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import time
 import uuid
 from datetime import datetime
@@ -1030,7 +1031,18 @@ def try_select_target_slot(host, port, target_slot_json, confirm=False, page_tar
         )
 
 
+def configure_utf8_output():
+    """Keep redirected helper logs Unicode-safe on Windows legacy locales."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(
+                encoding="utf-8", errors="backslashreplace", line_buffering=True,
+            )
+
+
 def main():
+    configure_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--url", default=DEFAULT_URL, help="Page to open Chrome to (default: %(default)s)"
