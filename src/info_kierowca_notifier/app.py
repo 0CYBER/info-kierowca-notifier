@@ -32,7 +32,7 @@ from info_kierowca_notifier import notifier
 from info_kierowca_notifier import client
 from info_kierowca_notifier.auth import launch as auth_launch
 from info_kierowca_notifier.booking import launch as booking_launch
-from info_kierowca_notifier.booking import reschedule as open_logged_in_browser
+from info_kierowca_notifier.booking import reservation as open_logged_in_browser
 from info_kierowca_notifier import tls_transport
 from info_kierowca_notifier.paths import CATEGORIES_FILE, WORD_CENTERS_FILE
 from info_kierowca_notifier.web.templates import LOGIN_PAGE, TOOLBAR_HTML, WIZARD_PAGE
@@ -626,7 +626,9 @@ class AppHandler(guard.LocalRequestGuardMixin, http.server.BaseHTTPRequestHandle
         elif self.path == "/pause":
             self._set_paused(True)
         elif self.path == "/resume":
-            self._set_paused(False)
+            payload = self._read_json_body()
+            if payload is not None:
+                self._set_paused(False, resume_choice=payload.get("expired_rate_limit_choice"))
         elif self.path == "/test-push":
             self._handle_test_push()
         elif self.path == "/reset-account":
@@ -638,16 +640,49 @@ class AppHandler(guard.LocalRequestGuardMixin, http.server.BaseHTTPRequestHandle
         else:
             self._send(404, b"not found", "text/plain")
 
-    def _set_paused(self, paused):
-        """Writes both the flag file and status.json synchronously, so the
-        dashboard and the headline's pause/resume icon reflect the change
-        the instant it's clicked instead of waiting for the poll loop's
-        next tick (which could be up to INTERVAL seconds away).
+    def _set_paused(self, paused, resume_choice=None):
+        """Apply pause/resume immediately and keep the dashboard in sync.
+
+        If a server rate-limit expired while checking was deliberately paused,
+        the first Resume request asks the UI to choose between one immediate
+        check and a normal fresh polling interval.  We stay paused until that
+        choice arrives, so merely opening the prompt cannot consume a request.
         """
+        if not paused:
+            # Covers both a running process and restart-after-expiry: make the
+            # wall-clock expiry visible before deciding whether Resume needs a
+            # choice.  clear_expired_rate_limit_status() records the pending
+            # choice when the persisted pause flag is still active.
+            AppHandler.dash_status["paused"] = notifier.is_paused()
+            notifier.clear_expired_rate_limit_status(AppHandler.dash_status)
+            pending = bool(AppHandler.dash_status.get("expired_rate_limit_pending_choice"))
+            if pending and resume_choice not in ("check_now", "wait"):
+                notifier.save_status(AppHandler.dash_status)
+                self._send_json(200, {
+                    "ok": True,
+                    "paused": True,
+                    "action": "expired_rate_limit_choice",
+                    "expired_at": AppHandler.dash_status.get("expired_rate_limit_at"),
+                })
+                return
+
         notifier.set_paused(paused)
         AppHandler.dash_status["paused"] = paused
+
+        if not paused:
+            if resume_choice == "check_now":
+                AppHandler.dash_status["force_check_now"] = True
+            AppHandler.dash_status.pop("expired_rate_limit_pending_choice", None)
+            AppHandler.dash_status.pop("expired_rate_limit_at", None)
+            notifier.clear_expired_rate_limit_status(AppHandler.dash_status)
+
+        # Publish the complete state *before* waking the poll thread.  FINAL7
+        # woke first and only then wrote force_check_now / saved status, which
+        # left a real race where the poller could observe a half-applied Resume
+        # and go back to sleep until an obsolete deadline.
         notifier.save_status(AppHandler.dash_status)
-        self._send_json(200, {"ok": True, "paused": paused})
+        AppHandler.wake_event.set()
+        self._send_json(200, {"ok": True, "paused": paused, "action": resume_choice or "updated"})
 
     def _handle_manual_login(self):
         """Backing handler for the 'Open browser' button: probes the session
@@ -849,10 +884,18 @@ class AppHandler(guard.LocalRequestGuardMixin, http.server.BaseHTTPRequestHandle
                 "outcome=setup_complete detail=settings_saved_rescheduling_poll"
             )
 
-        # Wake the scheduler after every successful Settings save.  The poll
-        # loop treats this as a reschedule signal: it re-reads config.json and
-        # updates next_check_at immediately, but does NOT perform a search just
-        # because the Event was signalled.
+        # Only an actual polling-interval change resets the local countdown.
+        # Other Settings saves still wake the scheduler (so it can observe
+        # fresh configuration) but must preserve the current countdown.
+        previous_interval = previous.get(
+            "poll_interval_seconds", notifier.DEFAULT_POLL_INTERVAL_SECONDS
+        )
+        new_interval = config.get(
+            "poll_interval_seconds", notifier.DEFAULT_POLL_INTERVAL_SECONDS
+        )
+        if previous_interval != new_interval:
+            AppHandler.dash_status["poll_interval_reset_to"] = float(new_interval)
+
         AppHandler.wake_event.set()
 
     def _handle_test_push(self):

@@ -216,8 +216,24 @@ async function ikwTogglePause() {
   // relied on below for `poll` itself).
   const resuming = isPaused;
   try {
-    const res = await fetch(resuming ? '/resume' : '/pause', {method: 'POST', headers: {'Content-Type': 'application/json'}});
-    const data = await res.json();
+    let res = await fetch(resuming ? '/resume' : '/pause', {method: 'POST', headers: {'Content-Type': 'application/json'}});
+    let data = await res.json();
+    if (resuming && data.action === 'expired_rate_limit_choice') {
+      const expired = data.expired_at ? new Date(Number(data.expired_at) * 1000) : null;
+      const when = expired && !Number.isNaN(expired.getTime())
+        ? expired.toLocaleTimeString(ikwI18n.lang() === 'pl' ? 'pl-PL' : 'en-GB', {hour: '2-digit', minute: '2-digit'})
+        : '';
+      const question = when
+        ? ikwI18n.t(`The search limit expired at ${when}. Check for available slots now? Choose Cancel to start the normal countdown instead.`)
+        : ikwI18n.t('The search limit has expired. Check for available slots now? Choose Cancel to start the normal countdown instead.');
+      const checkNow = confirm(question);
+      res = await fetch('/resume', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({expired_rate_limit_choice: checkNow ? 'check_now' : 'wait'})
+      });
+      data = await res.json();
+    }
     // poll() (defined in web.server's own script, sharing this
     // page) re-reads the now-updated status.json and redraws the
     // headline/icon immediately, instead of waiting up to 5s for its
@@ -297,10 +313,10 @@ LOGIN_PAGE = """<!doctype html>
   <p class="lead">Choose how the notifier should authenticate. Profil Zaufany can recover expired sessions automatically after setup.</p>
   <div class="methods"><button id="method-pz" class="on">Profil Zaufany</button><button id="method-mobywatel">mObywatel</button></div>
   <div id="pz-fields" style="display:block">
-    <label for="pz-username">Profil Zaufany username</label>
+    <label for="pz-username">Profil Zaufany email address</label>
     <div class="reveal">
       <input id="pz-username" type="password" autocomplete="username">
-      <button type="button" class="reveal-btn" id="reveal-pz-username" aria-label="Show or hide Profil Zaufany username"></button>
+      <button type="button" class="reveal-btn" id="reveal-pz-username" aria-label="Show or hide Profil Zaufany email address"></button>
     </div>
     <label for="pz-password">Profil Zaufany password</label><input id="pz-password" type="password" autocomplete="current-password">
     <div class="pz-pairing-description">Required for automatic Profil Zaufany login: pairing lets the app read the one-time SMS code from Google Messages.</div>
@@ -704,10 +720,10 @@ WIZARD_PAGE = """<!doctype html>
       <button type="button" class="cat-more" id="settings-relogin-btn">Get new session now</button>
       <div class="hint" id="settings-relogin-status"></div>
       <div id="settings-pz-fields" style="display:none">
-        <label for="settings-pz-username">Profil Zaufany username</label>
+        <label for="settings-pz-username">Profil Zaufany email address</label>
         <div class="reveal">
           <input id="settings-pz-username" type="password" autocomplete="username">
-          <button type="button" class="reveal-btn" id="reveal-pz-username-settings" aria-label="Show or hide Profil Zaufany username"></button>
+          <button type="button" class="reveal-btn" id="reveal-pz-username-settings" aria-label="Show or hide Profil Zaufany email address"></button>
         </div>
         <label for="settings-pz-password">Profil Zaufany password</label><input id="settings-pz-password" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved password">
         <div class="hint" id="password-status">No Profil Zaufany password is saved. Enter it to enable automatic login.</div>
@@ -783,7 +799,7 @@ WIZARD_PAGE = """<!doctype html>
             <input type="radio" name="search_mode" value="multi" checked>
             <span>
                 <b id="search-mode-multi-title">Multiple centers</b>
-                <small id="search-mode-multi-desc">Up to 5 centers</small>
+                <small id="search-mode-multi-desc">Earliest slots made available by the selected WORD centers (up to 5 centers)</small>
             </span>
         </label>
     </div>
@@ -811,16 +827,16 @@ WIZARD_PAGE = """<!doctype html>
     <fieldset>
       <legend>Alerts</legend>
       <div class="booking-note" id="booking-note" role="note">
-        <span class="booking-note-text">Before continuing, you need an existing booked exam. This app changes the date of that booking; it does not create a new booking.</span>
+        <span class="booking-note-text">Enter your currently booked exam date. The app uses it only as a comparison point for finding earlier slots — it does not change or cancel your existing reservation.</span>
         <button type="button" class="booking-note-dismiss" id="dismiss-booking-note" aria-label="Dismiss booking prerequisite message">Got it</button>
       </div>
-      <label for="current_slot_date_display">Required: date of the booking to reschedule</label>
+      <label for="current_slot_date_display">Required: current booked exam date</label>
       <div class="datepick" id="datepick">
         <input type="text" class="datepick-input" id="current_slot_date_display" placeholder="Select a date" readonly required>
         <input type="hidden" id="current_slot_date">
         <div class="calendar" id="calendar"></div>
       </div>
-      <div class="hint">Enter the date of the existing booking that you want the app to reschedule.</div>
+      <div class="hint">This date is only a comparison point for alerts and reservation automation. If you have an active reservation, the portal may require you to cancel it and wait for cancellation confirmation before creating a new one.</div>
 
       <div class="freq-head" style="margin-top:1rem;">
         <label for="time_from_slider">Preferred time of day</label>
@@ -834,7 +850,7 @@ WIZARD_PAGE = """<!doctype html>
       </div>
       <input type="hidden" id="earliest_slot_hour" value="0">
       <input type="hidden" id="latest_slot_hour" value="24">
-      <div class="hint" style="margin-top:-0.15rem;">A slot outside this window won't trigger an alert or open the reschedule browser. Checking and the dashboard still show everything found.</div>
+      <div class="hint" style="margin-top:-0.15rem;">A slot outside this window won't trigger an alert or open the reservation browser. Checking and the dashboard still show everything found.</div>
 
       <div class="divider"></div>
 
@@ -889,8 +905,8 @@ WIZARD_PAGE = """<!doctype html>
 
       <div class="toggle-row">
         <div class="toggle-text">
-          <div class="tt-title">Open my booking when a slot beats your booked date</div>
-          <div class="tt-sub">Opens a logged-in browser at your booking's "change date" screen. You still pick the date and confirm yourself.</div>
+          <div class="tt-title">Open the reservation page when an earlier slot is found</div>
+          <div class="tt-sub">Opens a logged-in browser on the available-exams screen for the WORD where the better slot was found. You still choose the slot yourself.</div>
         </div>
         <div class="switch on" id="auto_open_browser" role="switch" aria-checked="true" tabindex="0"></div>
       </div>
@@ -899,15 +915,15 @@ WIZARD_PAGE = """<!doctype html>
 
       <div class="toggle-row">
         <div class="toggle-text">
-          <div class="tt-title">Experimental: auto-select the matching slot</div>
-          <div class="tt-sub">Unverified against the live site. Also expands the matching date group and picks the exact exam type/time on the change-date screen, then goes to the summary/review screen. Still stops there — nothing is submitted.</div>
+          <div class="tt-title">Auto-select the matching slot</div>
+          <div class="tt-sub">Also selects the exact matching date/time and advances through the reservation wizard to the preliminary reservation summary. Stops there — nothing is submitted.</div>
         </div>
         <div class="switch" id="auto_select_slot" role="switch" aria-checked="false" tabindex="0"></div>
       </div>
       <div class="toggle-row" id="auto-confirm-row">
         <div class="toggle-text">
-          <div class="tt-title" style="color:#d98c8c;">Experimental: auto-confirm the reservation change</div>
-          <div class="tt-sub">Requires the toggle above. Submits the actual date change with no review step — the one action in this project that can't be undone by closing the browser. Only turn this on once you've watched auto-select pick the right slot reliably.</div>
+          <div class="tt-title" style="color:#d98c8c;">Auto-confirm the reservation</div>
+          <div class="tt-sub">Requires the toggle above. After verifying the preliminary summary, creates the reservation and leaves the browser open for any required confirmation/payment. This action cannot be undone by simply closing the browser.</div>
         </div>
         <div class="switch" id="auto_confirm_reschedule" role="switch" aria-checked="false" tabindex="0"></div>
       </div>
@@ -1124,7 +1140,7 @@ function updateSearchModeLabels() {
   document.getElementById('search-mode-single-title').textContent = ikwI18n.t('Single center');
   document.getElementById('search-mode-single-desc').textContent = ikwI18n.t('All dates made available by the selected WORD');
   document.getElementById('search-mode-multi-title').textContent = ikwI18n.t('Multiple centers');
-  document.getElementById('search-mode-multi-desc').textContent = ikwI18n.t('Up to 5 centers');
+  document.getElementById('search-mode-multi-desc').textContent = ikwI18n.t('Earliest slots made available by the selected WORD centers (up to 5 centers)');
 }
 
 function setSearchMode(mode, saveCurrent = true) {
@@ -1292,7 +1308,7 @@ wireSwitch(document.getElementById('auto_open_browser'));
 // pattern as applyNtfyDim() above. It also gets its own click handler
 // instead of a plain wireSwitch(), since turning it ON needs a confirm()
 // gate first: unlike every other toggle on this page, this one lets the app
-// submit a real reservation change with no human review step, so a misclick
+// create a real reservation with no human review step, so a misclick
 // shouldn't be able to enable it silently.
 const autoSelectSlotSwitch = document.getElementById('auto_select_slot');
 const autoConfirmSwitch = document.getElementById('auto_confirm_reschedule');
@@ -1307,9 +1323,9 @@ function toggleAutoConfirm() {
   if (!autoSelectSlotSwitch.classList.contains('on')) return;  // covers keyboard activation while dimmed
   const turningOn = !autoConfirmSwitch.classList.contains('on');
   if (turningOn && !confirm(t(
-    "This lets the app automatically click through and submit a real reservation date change "
-    + "the moment it finds a matching slot — no review step, and it can't be undone by closing "
-    + "the browser. Are you sure?"
+    "After the matching slot is selected and the preliminary summary is verified, the app will "
+    + "submit a real reservation through the portal. The portal may then require confirmation or "
+    + "payment. Closing the browser does not undo a submitted reservation. Are you sure?"
   ))) return;
   setSwitch(autoConfirmSwitch, turningOn);
 }
@@ -1759,7 +1775,9 @@ if (EXISTING_CONFIG) {
   loginMethodSelect.value = EXISTING_CONFIG.login_method || 'mobywatel';
   document.getElementById('settings-pz-username').value = EXISTING_CONFIG.pz_username || '';
   if (EXISTING_CONFIG.pz_credential_present) {
-    document.getElementById('password-status').textContent = t('Password saved securely by your operating system; its value is never shown here.');
+    const passwordStatus = document.getElementById('password-status');
+    passwordStatus.dataset.i18n = 'Password saved securely by your operating system; its value is never shown here.';
+    passwordStatus.textContent = t(passwordStatus.dataset.i18n);
   }
   updateAuthFields();
   const pageTitle = document.getElementById('page-title');

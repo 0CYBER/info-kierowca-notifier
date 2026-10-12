@@ -292,6 +292,11 @@ EXAM_TYPE_FIELDS = {
     "Practice": ("practiceDateTime", "placePracticeAmount"),
 }
 
+EXAM_ID_FIELDS = {
+    "Theoretical": "theoryId",
+    "Practice": "practiceId",
+}
+
 
 def exam_slot_fields(exam, exam_type):
     """Return (dt_str, places) for `exam`, keyed explicitly off `exam_type`
@@ -335,7 +340,8 @@ def parse_multi_center_hits(results, config, lower_date, now):
                 and earliest_hour <= dt.hour < latest_hour
             ):
                 hits.append(
-                    (word.get("wordName"), exam_type, dt, places)
+                    (word.get("wordName"), exam_type, dt, places,
+                     word.get("wordId"), exam.get(EXAM_ID_FIELDS.get(exam_type)))
                 )
 
     return hits
@@ -375,7 +381,8 @@ def parse_single_center_hits(result, config, lower_date):
                 and earliest_hour <= dt.hour < latest_hour
             ):
                 hits.append(
-                    (word_name, exam_type, dt, places)
+                    (word_name, exam_type, dt, places,
+                     config["organization_ids"][0], exam.get(EXAM_ID_FIELDS.get(exam_type)))
                 )
 
     return hits
@@ -586,6 +593,53 @@ def _record_successful_search(dash_status, now_ts=None):
     dash_status["rate_limit_until"] = None
 
 
+def clear_expired_rate_limit_status(dash_status, now_ts=None):
+    """Drop a stale rate-limit banner once its server-defined cooldown passed.
+
+    This is intentionally independent of whether checking is currently paused.
+    A user may pause before ``rate_limit_until`` and resume after it; in that
+    case the old "search resumes at ..." message must not reappear merely
+    because no new search ran while paused.  Current hits are left untouched
+    in status history, but are no longer presented as rate-limit-stale results.
+    """
+    if now_ts is None:
+        now_ts = time.time()
+
+    value = dash_status.get("rate_limit_until")
+    try:
+        until = float(value) if value else None
+    except (TypeError, ValueError):
+        until = None
+
+    if not until or now_ts < until:
+        return False
+
+    expired_at = until
+    dash_status["rate_limit_until"] = None
+    if dash_status.get("outcome") == "rate_limited":
+        previous = dash_status.pop("rate_limit_previous_outcome", None)
+        if previous not in ("slot_found", "no_slot"):
+            # Compatibility with status.json written by older builds: if the
+            # last successful snapshot contains slots, restore slot_found; if
+            # we know a successful search happened but it contained none,
+            # restore no_slot.  Do not invent a "first check" state.
+            if dash_status.get("current_hits"):
+                previous = "slot_found"
+            elif dash_status.get("last_successful_search"):
+                previous = "no_slot"
+        if previous in ("slot_found", "no_slot"):
+            dash_status["outcome"] = previous
+        dash_status["message"] = ""
+
+    # If the server cooldown expired while the user deliberately had checking
+    # paused, remember that fact until Resume.  The UI can then ask whether to
+    # run one check immediately or begin a normal fresh polling interval.
+    if dash_status.get("paused"):
+        dash_status["expired_rate_limit_pending_choice"] = True
+        dash_status["expired_rate_limit_at"] = expired_at
+    return True
+
+
 def _calculate_rate_limit_until(dash_status, headers, now_ts=None):
     """Calculate when search may resume after HTTP 429.
 
@@ -630,8 +684,18 @@ def run_check(logger, dash_status):
     fresh check to stop showing "Paused".
     """
     paused = is_paused()
+    status_changed = False
     if dash_status.get("paused") != paused:
         dash_status["paused"] = paused
+        status_changed = True
+
+    # Expiry is wall-clock based, not search based.  Clear a stale 429 banner
+    # even while paused so resuming after the cooldown cannot resurrect an old
+    # "search resumes at ..." message.
+    if clear_expired_rate_limit_status(dash_status):
+        status_changed = True
+
+    if status_changed:
         save_status(dash_status)
     if paused:
         return
@@ -847,6 +911,11 @@ def run_check(logger, dash_status):
         return
 
     if status == 429:
+        # Remember the last successful dashboard state so expiry of the 429
+        # banner can reveal it again instead of falling into a synthetic
+        # "waiting for first check" state.
+        if dash_status.get("outcome") in ("slot_found", "no_slot"):
+            dash_status["rate_limit_previous_outcome"] = dash_status.get("outcome")
         limit, remaining, reset, retry_after = _rate_limit_log_fields(search_headers)
         resume_at = _calculate_rate_limit_until(dash_status, search_headers)
         dash_status["rate_limit_until"] = resume_at
@@ -933,8 +1002,11 @@ def run_check(logger, dash_status):
 
     hits.sort(key=lambda h: h[2])
     hit_dicts = [
-        {"word": w, "exam_type": t, "datetime": dt.isoformat(), "places": n}
-        for w, t, dt, n in hits
+        {
+            "word": w, "exam_type": t, "datetime": dt.isoformat(), "places": n,
+            "organization_id": organization_id, "exam_id": exam_id,
+        }
+        for w, t, dt, n, organization_id, exam_id in hits
     ]
 
     if hits:
@@ -946,7 +1018,7 @@ def run_check(logger, dash_status):
                 _spots_label(n),
                 exam_labels.get(t, t),
             )
-            for w, t, dt, n in hits
+            for w, t, dt, n, _organization_id, _exam_id in hits
         ]
         logger.info("outcome=slot_found status=%s detail=%r", status, "; ".join(lines))
 
@@ -1056,29 +1128,34 @@ def wait_for_auth_refresh(logger, prior_captured_at, stop_event, wake_event):
 def loop(logger, dash_status, interval=None, stop_event=None, wake_event=None):
     """Check on a timer until stop_event is set (or forever, if none given).
 
-    Factored out of main()'s --loop branch so the app module can run this in a
-    background thread instead of shelling out to `python notifier.py --loop`
-    as a subprocess — stop_event lets that thread be told to exit cleanly.
+    Ordinary polling uses one monotonic deadline.  Pause converts that deadline
+    to a process-local ``remaining`` duration and removes the public deadline;
+    Resume creates a brand-new deadline from exactly that remaining duration.
+    This makes Pause a real countdown pause and prevents an old wall-clock
+    ``next_check_at`` from expiring in the background.
 
-    `interval` is only the fallback default passed to configured_poll_interval()
-    each cycle (e.g. from --interval on the CLI); once config.json has its own
-    poll_interval_seconds, that value wins.
+    Server rate-limit deadlines are deliberately different: ``rate_limit_until``
+    is an absolute server-defined wall-clock time and therefore keeps elapsing
+    while the application is paused.
 
-    `wake_event` also acts as a schedule-change signal.  Waking the event does
-    not itself run a search: the wait is recalculated first.  This lets a
-    Settings change update the countdown immediately without consuming an API
-    request.
-
-    While rate_limit_until is in the future it is a hard lower bound for the
-    next search.  The five-second safety margin is already included when that
-    timestamp is calculated from the server headers.
+    ``interval`` is only the fallback default.  The configured value is read
+    fresh before every new ordinary polling cycle.
     """
     if stop_event is None:
         stop_event = threading.Event()
     if wake_event is None:
         wake_event = threading.Event()
+
     default_interval = interval or DEFAULT_POLL_INTERVAL_SECONDS
-    logger.info("outcome=loop_start interval=%s", default_interval)
+    logger.info(
+        "outcome=loop_start interval=%s",
+        configured_poll_interval(default_interval),
+    )
+
+    # Process-local by design: restarting the application starts a fresh full
+    # interval, while Pause/Resume inside one process preserves this value.
+    paused_poll_remaining_s = None
+
     while not stop_event.is_set():
         check_result = None
         try:
@@ -1091,36 +1168,179 @@ def loop(logger, dash_status, interval=None, stop_event=None, wake_event=None):
             and len(check_result) == 2
             and check_result[0] == "auth_pending"
         ):
-            if wait_for_auth_refresh(
-                logger, check_result[1], stop_event, wake_event
-            ):
-                # This poll was already due. Authentication only delayed it;
-                # do not start a fresh poll interval before performing SEARCH.
+            if wait_for_auth_refresh(logger, check_result[1], stop_event, wake_event):
+                # Authentication delayed a poll that was already due.
                 continue
 
+        # A server cooldown that is active after run_check is an absolute
+        # wall-clock wait.  Ordinary waits are relative monotonic countdowns.
+        value = dash_status.get("rate_limit_until")
+        try:
+            rate_limit_until = float(value) if value else None
+        except (TypeError, ValueError):
+            rate_limit_until = None
+        now_wall = time.time()
+        rate_limit_active = bool(rate_limit_until and rate_limit_until > now_wall)
+
+        if rate_limit_active:
+            wait_s = max(0.0, rate_limit_until - now_wall)
+            wait_kind = "rate_limit"
+            # A server cooldown supersedes any ordinary pre-pause countdown.
+            paused_poll_remaining_s = None
+        elif paused_poll_remaining_s is not None:
+            wait_s = max(0.0, float(paused_poll_remaining_s))
+            wait_kind = "ordinary"
+            paused_poll_remaining_s = None
+        else:
+            wait_s = float(configured_poll_interval(default_interval))
+            wait_kind = "ordinary"
+
+        # Monotonic time is authoritative for ordinary countdown arithmetic;
+        # wall time exists only to render the dashboard's next_check_at.
+        deadline_mono = time.monotonic() + wait_s
+
         while not stop_event.is_set():
-            wait_s = scheduled_wait(
-                dash_status,
-                configured_poll_interval(default_interval),
-            )
-            # Publish the exact deadline before waiting so the dashboard
-            # immediately reflects the current schedule.
-            dash_status["next_check_at"] = (
-                datetime.now() + timedelta(seconds=wait_s)
+            if wait_kind == "rate_limit":
+                # Never freeze a server deadline.  Its remaining duration is
+                # recalculated from wall clock even while Pause is active.
+                remaining = max(0.0, rate_limit_until - time.time())
+                if remaining <= 0:
+                    dash_status["next_check_at"] = None
+                    save_status(dash_status)
+                    # run_check() clears the expired banner and, if still
+                    # paused, records that Resume needs the check-now/wait UI.
+                    break
+
+                dash_status["next_check_at"] = datetime.fromtimestamp(
+                    rate_limit_until
+                ).isoformat()
+                save_status(dash_status)
+
+                wake_event.clear()
+                # Re-read durable state after clear() so a Pause/Resume edge
+                # racing with it cannot be lost.
+                woke = wake_event.wait(remaining)
+                if stop_event.is_set():
+                    break
+                if not woke:
+                    continue
+
+                if dash_status.pop("force_check_now", False):
+                    logger.info("outcome=poll_due detail=expired_rate_limit_user_check_now")
+                    dash_status["next_check_at"] = None
+                    save_status(dash_status)
+                    break
+
+                # Settings may change the ordinary polling interval while a
+                # server cooldown is active, but rate-limit time is absolute
+                # and must not be reset.  Consume the local reset request; the
+                # new configured interval will naturally apply after the next
+                # successful/due check.
+                dash_status.pop("poll_interval_reset_to", None)
+                logger.info("outcome=poll_rescheduled detail=pause_state_changed")
+                # Pause/Resume does not alter rate_limit_until.  Recalculate
+                # its wall-clock remainder at the top of this loop.
+                continue
+
+            # ----- ordinary local countdown -----
+            if is_paused():
+                # Capture exactly once when entering Pause.  From this point
+                # there is no active ordinary deadline at all.
+                if paused_poll_remaining_s is None:
+                    paused_poll_remaining_s = max(
+                        0.0, deadline_mono - time.monotonic()
+                    )
+                    logger.info(
+                        "outcome=poll_rescheduled detail=paused remaining=%.3f",
+                        paused_poll_remaining_s,
+                    )
+
+                dash_status["next_check_at"] = None
+                save_status(dash_status)
+
+                wake_event.clear()
+                if not is_paused():
+                    # Resume raced with clear(); do not block.
+                    continue
+                wake_event.wait()
+                if stop_event.is_set():
+                    break
+                if is_paused():
+                    # While paused, only an actual interval change replaces
+                    # the frozen remainder.  Other Settings saves leave it
+                    # untouched.
+                    reset_to = dash_status.pop("poll_interval_reset_to", None)
+                    if reset_to is not None:
+                        paused_poll_remaining_s = max(0.0, float(reset_to))
+                        logger.info(
+                            "outcome=poll_rescheduled detail=interval_changed_paused "
+                            "remaining=%.3f", paused_poll_remaining_s
+                        )
+                    continue
+
+                logger.info("outcome=poll_rescheduled detail=pause_state_changed")
+                # Resume always creates a *new* deadline from the frozen
+                # relative duration.  The old deadline is discarded forever.
+                deadline_mono = time.monotonic() + max(
+                    0.0, float(paused_poll_remaining_s or 0.0)
+                )
+                paused_poll_remaining_s = None
+
+            if dash_status.pop("force_check_now", False):
+                logger.info("outcome=poll_due detail=expired_rate_limit_user_check_now")
+                dash_status["next_check_at"] = None
+                save_status(dash_status)
+                break
+
+            remaining = max(0.0, deadline_mono - time.monotonic())
+            if remaining <= 0:
+                dash_status["next_check_at"] = None
+                save_status(dash_status)
+                break
+
+            # Derive the public wall-clock timestamp afresh from the one true
+            # monotonic remaining duration.  It can therefore never retain a
+            # pre-pause deadline after Resume.
+            dash_status["next_check_at"] = datetime.fromtimestamp(
+                time.time() + remaining
             ).isoformat()
             save_status(dash_status)
 
             wake_event.clear()
-            woke_for_reschedule = wake_event.wait(wait_s)
+            if is_paused():
+                # Pause raced with clear(); loop immediately and freeze from
+                # the monotonic deadline rather than sleeping through it.
+                continue
+
+            woke = wake_event.wait(remaining)
             if stop_event.is_set():
                 break
-            if not woke_for_reschedule:
+            if not woke:
+                continue
+
+            if is_paused():
+                # The next iteration captures the exact monotonic remainder.
+                continue
+
+            if dash_status.pop("force_check_now", False):
+                logger.info("outcome=poll_due detail=expired_rate_limit_user_check_now")
+                dash_status["next_check_at"] = None
+                save_status(dash_status)
                 break
 
-            # Settings/auth code may wake us only to recalculate the deadline.
-            # Do not fall through to run_check() merely because the Event was
-            # signalled; read config.json again and publish a fresh countdown.
-            logger.info("outcome=poll_rescheduled detail=wake_event")
+            # A Settings save resets the local countdown only when the polling
+            # interval itself actually changed.  Unrelated saves preserve the
+            # existing monotonic deadline.
+            reset_to = dash_status.pop("poll_interval_reset_to", None)
+            if reset_to is not None:
+                new_interval = max(0.0, float(reset_to))
+                deadline_mono = time.monotonic() + new_interval
+                logger.info(
+                    "outcome=poll_rescheduled detail=interval_changed "
+                    "remaining=%.3f", new_interval
+                )
+            else:
+                logger.info("outcome=poll_rescheduled detail=wake_event")
 
 
 def main():
