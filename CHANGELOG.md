@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fork integration
+- Merge upstream development v2.4.6 while preserving Telegram settings, slot alerts and login alerts.
+- Mirror outcomes from the new reservation helper to Telegram and preserve UTF-8 Windows helper logs.
+- Add regression coverage for Telegram with automatic reservation, failed/busy browser launches, create outcomes and auto-select safety.
+- Document PORD Gdansk payment requirements and fastest-slot notification deduplication.
+
 ### Fixed
 - Use UTF-8 for booking-helper output and its launch log so Polish messages do not crash on Windows systems using a legacy Cyrillic code page.
 
@@ -14,6 +20,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Slot alerts, login-recovery alerts and reschedule alerts are mirrored to Telegram when enabled, using the same alert toggles; slot alerts include a link to info-kierowca.pl.
 - New `config.json` keys `telegram_enabled`, `telegram_bot_token`, `telegram_chat_id`; token and chat ID are format-validated and never echoed in errors or logs.
 - Polish translations for the new UI and error messages.
+
+## [2.4.6] - 2026-10-11
+- Settings: changing the polling interval now resets the local countdown to the full new value even while paused; saving unrelated settings preserves the current countdown.
+
+### FINAL8 scheduler corrections
+- Fixed Pause countdown scheduling: ordinary polling now has one monotonic deadline; Pause converts it to a frozen process-local remaining duration, removes the active dashboard deadline, and Resume creates a new deadline from that exact remainder. This prevents the countdown from expiring in the background and avoids the stuck “check shortly” state after repeated Pause/Resume cycles.
+- Server rate-limit deadlines remain absolute and continue to elapse while paused.
+- Poll-loop startup logging now reports the configured polling interval rather than the fallback default.
+- Pause/Resume state is fully published before the poll thread is woken, removing a race around resume actions.
+
+### UI and localization
+- Completed Polish translations in Settings for manual session refresh, the preferred-time-window hint, and the private ntfy notification-link instructions.
+- Clarified that the Profil Zaufany login field expects the user email address.
+- Expanded the multi-center search description to explain that it shows the earliest slots made available by up to five selected WORD centers.
+- Clarified that the currently booked exam date is only a comparison point for alerts and reservation automation; the notifier does not change or cancel an existing reservation, and the portal may require cancellation to be confirmed before a new reservation can be created.
+- Removed the “Experimental” label from the tested automatic slot-selection and reservation-creation settings.
+
+### Added
+- Added the current `/reservation` wizard automation for matching exam slots.
+- Added optional automatic selection of the exact matching slot, confirmation of the slot modal, Polish language selection, and navigation to **Podsumowanie wstępnej rezerwacji** without submitting the reservation.
+- Added optional automatic reservation creation through the portal's own final **Zapisz i przejdź dalej** button.
+- Added CDP observation of `POST /bknd/exam/api/v1/Reservations/create` so the notifier can distinguish API success, HTTP/API rejection, network failure, and an unobserved response without logging the request payload.
+- Added safe logging of reservation-create HTTP status and bounded response fields (`id`, `type`, `message`), with long numeric identifiers redacted from portal messages.
+- Search hits now retain the winning WORD organization ID and theory/practice exam ID for reservation handoff.
+
+### Changed
+- Replaced the obsolete `/cases` “change date” flow with the live `/reservation` flow.
+- Reservation opening always targets the concrete WORD from the winning search result, regardless of whether discovery used single- or multi-center search.
+- Browser reservation automation always uses the portal's single-WORD flow and leaves the portal-provided start date unchanged.
+- Krok 1 now follows the live portal order: SingleWord mode → target WORD autocomplete → PKK → profile number/category → submit.
+- The basic **Open reservation** option now stops on Krok 2 after expanding the matching date, leaving the concrete slot for manual selection.
+- **Auto-select** stops on the verified preliminary summary; nothing is submitted unless **Auto-confirm** is also enabled.
+- **Auto-confirm** submits at most once, then observes the API/portal result without further interaction and leaves Chrome open for any confirmation or payment.
+- Updated Polish and English automation descriptions to reflect reservation creation rather than the obsolete change-date workflow.
+
+### Fixed
+- Fixed stale rate-limit status after pause/resume: if the server cooldown expires while checking is paused, resuming no longer shows the old “search resumes at …” message.
+- When a server rate-limit expires while checking is paused (including across an application restart), Resume now asks whether to check immediately or start the normal polling countdown; an active cooldown still counts down by wall-clock time.
+- Pausing now freezes the ordinary polling schedule instead of letting empty polling intervals roll over in the background; an active server rate-limit still expires by wall-clock time and, once expired during pause, no new normal countdown starts until the user resumes.
+- Restored the last successful slot/no-slot dashboard state after an expired rate-limit instead of showing “Waiting for first check”; existing results remain visible until a new successful search replaces them.
+- Fixed the saved-password status text so switching Settings back to English restores the English wording instead of retaining the Polish translation.
+- Fixed Krok 1 WORD selection by using `#word-input` autocomplete, including WORDs not present in the initial nearby-centers list.
+- Fixed PKK/profile selection so the portal can populate the configured category automatically.
+- Fixed Krok 1 submission and Krok 2 detection for Angular Material controls that remain mounted off-screen.
+- Fixed final summary-button detection when the active submit button is below the viewport while inactive-step buttons remain mounted horizontally off-screen.
+- Fixed exact date expansion using the live `mat-expansion-panel-header` structure.
+- Fixed slot selection when multiple vehicle rows share the same date/time by choosing the first matching row in DOM order.
+- Fixed Angular Material next-step detection when desktop/mobile labels share one button.
+- Prevented repeated final reservation-create clicks with a single-fire browser marker and the existing confirm cooldown gate.
+- Improved post-create diagnostics so persistent cookie UI cannot be mistaken for the reservation result; the create API response is authoritative and DOM observation is only a fallback/secondary confirmation.
+
 
 ## 2.4.5 — 2026-10-09
 

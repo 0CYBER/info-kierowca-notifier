@@ -243,98 +243,52 @@ from a `systemd --user` unit would need; most desktop environments do this autom
 Headless Profil Zaufany relogin does not require those display variables.
 If Chrome never appears, check `journalctl --user -u info-kierowca-auto-refresh -n 20 --no-pager`.
 
-## Reschedule assist
+## Reservation assist
 
-If you already have a paid booking and just want to move it to a fresher date, `src/info_kierowca_notifier/notifier.py` can
-open a browser for you the moment a matching slot beats your booked date (same gating as the phone push —
-see `current_slot_date`), pre-authenticated with your saved session, and click
-through the first two steps of changing that booking's date:
+When a slot beats the booked date configured in the app, `auto_open_browser` can open a dedicated
+Chrome window already authenticated with the captured info-kierowca.pl session. The reservation
+helper does not recreate the original search mode. Whether the winning slot came from single- or
+multi-center search, it uses the winning result's WORD and continues through the normal
+`/reservation` flow for that one center.
 
-```
-uv run python -m info_kierowca_notifier.booking.reschedule   # or let a slot hit trigger it automatically
-```
+The helper selects PKK, the configured category and the WORD from the winning search result, then
+loads that centre's available-exams step. It deliberately leaves the portal's own start-date field
+alone: discovery has already found the winning slot, so the reservation helper only needs the
+concrete WORD and target slot. The portal itself performs `OneCenterExam`; the helper does not inject
+a fabricated API response.
+With only `auto_open_browser` enabled, automation stops on that available-exams screen. The user
+chooses and confirms the slot manually.
 
-It launches Chrome in its own dedicated profile (a separate `--remote-debugging-port` from
-`src/info_kierowca_notifier/auth/session.py`'s, so the two never collide), injects your `session.json` cookies so it
-opens straight into `/cases` already logged in, and suppresses the cookie-consent banner by
-pre-setting the same cookie the real banner would write on "necessary only". It then clicks
-"Zmień termin" on your booking, then "Zmień termin rezerwacji" in the confirm modal that opens —
-and, with the default settings, stops there on the date-range picker with nothing about the booking
-changed yet. You can finish the change manually or enable the options below to select and confirm
-the matching slot automatically.
-
-Skipped automatically if something's already listening on its debug port (`9555`), so a slot that
-keeps reappearing under a new signature won't pile up duplicate Chrome windows. Disable with
+Skipped automatically if something is already listening on the helper's debug port (`9555`), so a
+repeated hit cannot pile up duplicate Chrome windows. Disable the feature with
 `auto_open_browser: false` in `config.json`.
 
-**Requires an existing confirmed booking.** The "Zmień termin" button only appears on a booking
-that's already `Potwierdzony` (confirmed) — if you don't have one, there's nothing on `/cases` for
-this to click, and it'll just report that it couldn't find the button. The app reschedules the
-booking you already hold; it cannot create a new one.
+### Auto-selecting the matching slot and reaching the preliminary summary
 
-### Auto-selecting the matching slot and reaching the summary screen
+Turn on "Auto-select the matching slot" in Settings → Automation (or set
+`"auto_select_slot": true`). After the available-exams step is loaded, the helper selects the exact
+matching exam date/time from the winning search result, confirms the "Potwierdź wybrany egzamin"
+modal, advances from the term step, keeps Polish as the exam language, and advances once more.
 
-Turn on "Auto-select the matching slot" in Settings → Automation (or add `"auto_select_slot": true`
-to `config.json` by hand) to go further: after landing on the empty date-range picker, it also expands the date group that
-matches the slot notifier.py just found, clicks the radio button for that exact exam type + time,
-and then clicks "Przejdź do podsumowania" (go to summary) to land on the summary/review screen. It
-deliberately never touches the "Data rozpoczęcia" field — every slot notifier finds is already
-within the ~31-day window the picker shows without changing it.
+It then stops on **"Podsumowanie wstępnej rezerwacji"**. Nothing has been submitted at that point.
+The final "Zapisz i przejdź dalej" button on that summary is deliberately left untouched.
 
-With just this flag on, it stops there, unconditionally, on the summary/review screen: nothing past
-that click is automated, whether or not a matching slot was found (someone else may have taken it
-in the few seconds since the check that triggered this).
+### Auto-confirming the reservation
 
-This option is off by default, so enabling it is an explicit choice to go beyond the manual
-reschedule-assist workflow.
+Turn on "Auto-confirm the reservation" in Settings → Automation only together with auto-select
+(or set both `"auto_select_slot": true` and `"auto_confirm_reschedule": true`). The configuration
+key keeps its historical name for backward compatibility.
 
-### Auto-confirming the reservation change
+Before the final action, the helper verifies that the preliminary summary matches the intended
+date, time, exam type and WORD. Only then may it click the summary's final
+"Zapisz i przejdź dalej" button. That click is the high-stakes boundary: the live portal issues
+`POST /bknd/exam/api/v1/Reservations/create`. The helper intentionally lets the portal build and
+send that request rather than constructing it itself.
 
-The summary screen (the "Potwierdź wybrany egzamin" modal — exam type, category, date/time, and
-price, with no separate payment step) has its own confirm button, "Potwierdź i przejdź dalej".
-Turn on "Auto-confirm the reservation change" in Settings → Automation — it asks you to confirm
-once in a browser dialog before it takes effect, and only appears there once "Auto-select the
-matching slot" is already on — **in addition to** that toggle. (Or set both
-`"auto_select_slot": true` and `"auto_confirm_reschedule": true` in `config.json` by hand.) It
-clicks that button too — actually submitting the reservation date change. `auto_confirm_reschedule`
-alone, without `auto_select_slot`, does nothing: without it, the flow never reaches the summary
-screen to confirm on — the wizard enforces this by dimming/disabling the toggle, and the app module
-enforces it again server-side regardless of what a saved `config.json` says.
-
-Before that click, it re-checks the summary screen's own text actually shows the date, time, and
-exam type you intended — a safety check against the slot-selection step having matched the wrong
-row. If that check fails, or the confirm button never becomes clickable, it stops and leaves the
-screen for you to finish by hand instead of guessing.
-
-**This is the single highest-stakes automated action in this project.** Every earlier step in the
-reschedule flow can be undone just by closing the Chrome window; this one can't — it submits a real
-change to an already-paid exam booking. It remains off by default and requires an explicit
-confirmation when you enable it.
-
-After clicking confirm, it also reloads `/cases` and checks whether the booking now actually shows
-your slot with a confirmed status. If — and only if — that check succeeds, it updates
-`current_slot_date` in `config.json` to the new date for you, so the notifier immediately knows
-about its own success instead of comparing future checks against the old date. If the check doesn't
-succeed (the page didn't update in time, wording differs, etc.), `config.json` is left untouched and
-you're told to check the site and update "Date of your current booked slot" in Settings yourself if
-it did go through.
-
-**How you find out what happened.** This whole flow is auto-triggered by a detached background
-process, so none of it prints to a terminal you're watching. Two things surface it instead:
-
-- Everything gets logged to `~/.local/state/info-kierowca-notifier/reschedule.log` (plain
-  append-only text — separate from the main `notifier.log`).
-- A phone push (via your existing `ntfy_topic`) fires for anything from the point it starts trying
-  to click the final confirm button onward: couldn't verify the summary matched, couldn't click
-  confirm, confirmed but couldn't verify it landed, or confirmed and verified. The earlier
-  slot-selection steps don't get a second push — you already got one when the slot was first found.
-
-**A short cooldown after every confirm attempt.** Once it's tried the final confirm click — whether
-or not that click, or the verification after it, actually succeeded — it won't try again for 15
-minutes. This matters specifically for the "confirmed but couldn't verify" case: if the reservation
-actually went through but the check just timed out, `current_slot_date` stays on the old date, and
-without this cooldown the very next check finding some other nearby slot could immediately submit
-*another* real reservation change before you've had a chance to see the push above and step in.
+After the click, Chrome remains open for any response, further confirmation or payment required by
+the portal. Closing the browser after this click does not undo a reservation that the server has
+already created. For that reason auto-confirm remains experimental and off by default. Test the
+auto-select-only path first and verify that it consistently reaches the correct preliminary summary.
 
 ## Pausing / resuming
 
@@ -378,3 +332,31 @@ uptime, which then gives `OnUnitActiveSec` its reference point for the regular 6
 previous run) is already bound to port 8787. Find and stop it, then
 `systemctl --user reset-failed info-kierowca-dashboard.service` before starting again — systemd
 stops retrying after a few rapid failures (`start-limit-hit`).
+
+
+## Telegram and reservation automation (fork integration, v2.4.6)
+
+The active browser helper is now `booking/reservation.py`, not the legacy
+`booking/reschedule.py`. It creates a new preliminary reservation; it does not
+cancel or replace an existing paid booking. The existing configuration names
+`auto_select_slot` and `auto_confirm_reschedule` are retained for compatibility.
+
+When `phone_alerts` and `telegram_enabled` are enabled, the poller sends a
+Telegram slot alert **before** trying to launch the browser. Failed booking,
+an already-open browser, and the confirmation cooldown do not suppress that
+initial alert. Notifications concern only the fastest qualifying hit, strictly
+before `current_slot_date`, and identical word/type/datetime hits are deduplicated.
+This is not a stream of every available slot, and the same failed slot does not
+get retried or re-notified on every poll merely because reservation failed.
+
+The new reservation helper also mirrors final create outcomes to Telegram:
+rejected, accepted, confirmation/payment required, or result not verified.
+Failures before the final create stage are logged; the initial slot alert still
+stands. Telegram delivery is best effort, independent of ntfy configuration.
+
+PORD Gdansk is center 43 in the bundled catalog. PORD officially supports online
+reservation through Info-Kierowca, but payment (including payment from balance)
+and subsequent PORD approval are required. The helper stops before completing
+payment and does not guarantee a confirmed exam booking. Its PORD-specific live
+flow has not been verified by making a real reservation.
+Source: https://pord.pl/zapisy-na-egzamin-on-line/
