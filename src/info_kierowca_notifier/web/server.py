@@ -353,7 +353,7 @@ async function poll() {
     detail.textContent = "";
   } else {
     body.className = "none";
-    headline.textContent = ui("Waiting for first check…");
+    headline.textContent = data.last_check ? ui("Waiting for next check…") : ui("Waiting for first check…");
     subline.textContent = "";
     detail.textContent = "";
   }
